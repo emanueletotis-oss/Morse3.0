@@ -2,17 +2,18 @@
 const MORSE_MAP = {'.-':'A','-...':'B','-.-.':'C','-..':'D','.':'E','..-.':'F','--.':'G','....':'H','..':'I','.---':'J','-.-':'K','.-..':'L','--':'M','-.':'N','---':'O','.--.':'P','--.-':'Q','.-.':'R','...':'S','-':'T','..-':'U','...-':'V','.--':'W','-..-':'X','-.--':'Y','--..':'Z', '-----':'0','.----':'1','..---':'2','...--':'3','....-':'4','.....':'5','-....':'6','--...':'7','---..':'8','----.':'9','/':' '};
 const REVERSE_MAP = Object.fromEntries(Object.entries(MORSE_MAP).map(([k,v]) => [v,k]));
 
-// TEMPI: 400ms è lo standard "Safe" per evitare lag hardware
+// TEMPI: 400ms garantisce che i sensori non perdano colpi
 const UNIT = 400; 
 
-// --- STATO ---
+// --- STATO GLOBALE ---
 let audioCtx, activeStream, rxInterval;
 let signalActive = false;
 let lastTransition = 0;
 let currentBuffer = "";
 let isTransmitting = false;
 let stopSignal = false;
-let isFirstSignalDetected = false; // Fix per lo slash iniziale
+let isLooping = false;
+let isFirstSignalDetected = false;
 
 // --- NAVIGAZIONE ---
 function showScreen(id) {
@@ -20,14 +21,15 @@ function showScreen(id) {
     document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
     document.getElementById(id).classList.add('active-screen');
     document.getElementById(id === 'screen1' ? 'nav1' : 'nav2').classList.add('active');
-    stopReception(); stopTransmission();
+    stopReception(); 
+    stopTransmission();
 }
 
 // --- LOGICA DI RICEZIONE ---
 function handleSignalChange(isOn) {
     const now = performance.now();
     
-    // LOGICA "ANTI-SLASH" INIZIALE
+    // FIX "/" INIZIALE: Ignora tutto finché non arriva il primo segnale vero
     if (!isFirstSignalDetected) {
         if (isOn) {
             isFirstSignalDetected = true;
@@ -35,7 +37,7 @@ function handleSignalChange(isOn) {
             lastTransition = now;
             document.getElementById('signalIndicator').className = 'signal-active';
         }
-        return; // Ignora tutto finché non arriva il primo segnale vero
+        return; 
     }
 
     if (isOn !== signalActive) {
@@ -44,7 +46,6 @@ function handleSignalChange(isOn) {
         if (!isOn) { 
             // FINE IMPULSO (LUCE/SUONO -> BUIO/SILENZIO)
             if (duration > 60) { // Filtro anti-glitch
-                // Finestra flessibile per il punto e la linea
                 if (duration < UNIT * 1.8) {
                     currentBuffer += ".";
                     updateLiveMorse(".");
@@ -55,10 +56,8 @@ function handleSignalChange(isOn) {
             }
         } else {
             // FINE PAUSA (BUIO/SILENZIO -> LUCE/SUONO)
-            // Se la pausa è > 2 unità, è una nuova lettera
             if (duration > UNIT * 1.5) { 
                 decodeLetter();
-                // Se la pausa è molto lunga (> 5 unità), è uno spazio parola
                 if (duration > UNIT * 4.5) { 
                     document.getElementById('rxText').value += " ";
                     document.getElementById('rxMorse').value += " / ";
@@ -116,14 +115,13 @@ async function startVideoRx() {
             for(let i=0; i<pixels.length; i+=4) brightness += (pixels[i] + pixels[i+1] + pixels[i+2]) / 3;
             brightness /= (pixels.length/4);
 
-            // Calibrazione dinamica ultra-veloce
             if (brightness < minB) minB = brightness;
             if (brightness > maxB) maxB = brightness;
             minB += 0.2; maxB -= 0.2; 
 
             const diff = maxB - minB;
             const threshold = minB + (diff * 0.65);
-            const isOn = (diff > 15) && (brightness > threshold);
+            const isOn = (diff > 18) && (brightness > threshold);
             
             const level = diff > 0 ? ((brightness - minB) / diff) * 100 : 0;
             document.getElementById('signalLevelBar').style.width = level + "%";
@@ -131,7 +129,7 @@ async function startVideoRx() {
 
             handleSignalChange(isOn);
         }, 40);
-    } catch(e) { alert("Camera Error"); }
+    } catch(e) { alert("Errore Camera"); }
 }
 
 // --- RICEZIONE AUDIO ---
@@ -154,7 +152,6 @@ async function startAudioRx() {
         rxInterval = setInterval(() => {
             analyzer.getByteFrequencyData(buffer);
             let currentVol = 0;
-            // Range frequenza beep (600-900Hz)
             for(let i=10; i<25; i++) if(buffer[i] > currentVol) currentVol = buffer[i];
 
             if (currentVol < minVol) minVol = currentVol;
@@ -163,49 +160,46 @@ async function startAudioRx() {
 
             const diff = maxVol - minVol;
             const threshold = minVol + (diff * 0.5);
-            const isOn = (diff > 40) && (currentVol > threshold);
+            const isOn = (diff > 45) && (currentVol > threshold);
 
             document.getElementById('signalLevelBar').style.width = (currentVol/255*100) + "%";
             document.getElementById('signalLevelBar').style.backgroundColor = isOn ? "lime" : "gray";
             
             handleSignalChange(isOn);
         }, 40);
-    } catch(e) { alert("Mic Error"); }
+    } catch(e) { alert("Errore Microfono"); }
 }
 
-// --- TRASMISSIONE MIGLIORATA (FIX PRIMO PUNTO) ---
+// --- TRASMISSIONE ---
 async function startTx(type) {
     if (isTransmitting) return;
     const text = document.getElementById('outputMorse').value;
     if (!text) return;
 
     isTransmitting = true; stopSignal = false;
-    const btn = document.getElementById(type === 'sound' ? 'btnSound' : 'btnTorch');
-    btn.classList.add('active-tx');
+    document.getElementById(type === 'sound' ? 'btnSound' : 'btnTorch').classList.add('active-tx');
 
     let track = null;
     let stream = null;
 
-    // 1. INIZIALIZZAZIONE HARDWARE
     if (type === 'torch') {
         try {
             stream = await navigator.mediaDevices.getUserMedia({video: {facingMode: 'environment'}});
             track = stream.getVideoTracks()[0];
+            // FIX PRIMO PUNTO: Aspettiamo che la fotocamera sia pronta
+            await new Promise(r => setTimeout(r, 1000));
         } catch(e) { stopTransmission(); return; }
     } else {
         if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
         audioCtx.resume();
     }
 
-    // 2. WARM-UP (500ms di attesa prima del primo segnale)
-    await new Promise(r => setTimeout(r, 500));
-
     const play = async (d) => {
         if (type === 'sound') {
             const o = audioCtx.createOscillator();
             const g = audioCtx.createGain();
             o.connect(g); g.connect(audioCtx.destination);
-            o.frequency.value = 800; // Tono più squillante
+            o.frequency.value = 800;
             g.gain.setValueAtTime(0, audioCtx.currentTime);
             g.gain.linearRampToValueAtTime(1, audioCtx.currentTime + 0.02);
             o.start();
@@ -219,7 +213,6 @@ async function startTx(type) {
         }
     };
 
-    // 3. CICLO DI TRASMISSIONE
     do {
         for (let c of text) {
             if (stopSignal) break;
@@ -228,7 +221,7 @@ async function startTx(type) {
             else if (c === ' ') { await new Promise(r => setTimeout(r, UNIT*2)); }
             else if (c === '/') { await new Promise(r => setTimeout(r, UNIT*5)); }
         }
-        await new Promise(r => setTimeout(r, UNIT * 10)); // Pausa lunga tra i loop
+        await new Promise(r => setTimeout(r, UNIT * 10));
     } while (isLooping && !stopSignal);
 
     if (track) { track.stop(); if(stream) stream.getTracks().forEach(t => t.stop()); }
@@ -251,23 +244,49 @@ function stopReception() {
     document.getElementById('signalLevelBar').style.width = "0%";
 }
 
-// --- EVENTI ---
+// --- COLLEGAMENTO EVENTI (IMPORTANTE) ---
+
+// Traduzione Testo -> Morse
 document.getElementById('btnConvert').onclick = () => {
     const val = document.getElementById('inputText').value.toUpperCase();
     document.getElementById('outputMorse').value = val.split('').map(c => {
-        for(let k in MORSE_MAP) if(MORSE_MAP[k] === c) return k;
-        return c === ' ' ? '/' : '';
+        if (c === ' ') return '/';
+        for (let key in MORSE_MAP) {
+            if (MORSE_MAP[key] === c) return key;
+        }
+        return '';
     }).join(' ');
 };
+
+// Copia negli appunti
+document.getElementById('btnCopy').onclick = () => {
+    const el = document.getElementById('outputMorse');
+    el.select();
+    document.execCommand('copy');
+};
+
+// Avvio Trasmissione
+document.getElementById('btnSound').onclick = () => { stopSignal = true; setTimeout(() => startTx('sound'), 100); };
+document.getElementById('btnTorch').onclick = () => { stopSignal = true; setTimeout(() => startTx('torch'), 100); };
+document.getElementById('btnStop').onclick = stopTransmission;
+
+// Loop
+document.getElementById('btnLoop').onclick = () => {
+    isLooping = !isLooping;
+    const btn = document.getElementById('btnLoop');
+    btn.innerHTML = isLooping ? "Loop ON &#10004;" : "Loop &#8635;";
+    btn.className = `action-btn small-btn ${isLooping ? 'loop-on' : 'loop-off'}`;
+};
+
+// Ricezione
 document.getElementById('btnRxCamera').onclick = startVideoRx;
 document.getElementById('btnRxAudio').onclick = startAudioRx;
 document.getElementById('btnRxStop').onclick = stopReception;
+
+// Pulizia
 document.getElementById('btnClearRx').onclick = () => {
     document.getElementById('rxMorse').value = "";
     document.getElementById('rxText').value = "";
     currentBuffer = "";
-};
-document.getElementById('btnLoop').onclick = () => {
-    isLooping = !isLooping;
-    document.getElementById('btnLoop').innerHTML = isLooping ? "Loop ON" : "Loop OFF";
+    isFirstSignalDetected = false;
 };
