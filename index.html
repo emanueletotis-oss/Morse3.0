@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Convertitore Morse</title>
+    
+    <!-- PWA -->
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <link rel="manifest" href="manifest.json">
+    <link rel="apple-touch-icon" href="icon.jpg">
+    <link rel="icon" type="image/jpeg" href="icon.jpg">
+    
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+    <nav class="top-nav">
+        <button onclick="showScreen('screen1')" id="nav1" class="nav-btn active">Trasmissione</button>
+        <button onclick="showScreen('screen2')" id="nav2" class="nav-btn">Ricezione</button>
+    </nav>
+
+    <!-- SCHERMATA 1: TRASMISSIONE -->
+    <div id="screen1" class="screen active-screen">
+        <div class="header-block">
+            <h1 class="main-title">Convertitore<br>Testo &rarr; Morse</h1>
+        </div>
+        
+        <div class="input-group">
+            <div class="label-text">Inserisci il tuo testo qui</div>
+            <textarea id="inputText" class="input-area"></textarea>
+        </div>
+        
+        <button id="btnConvert" class="action-btn big-btn">Converti in Morse</button>
+        
+        <div class="input-group">
+            <div class="label-text">Codice Morse tradotto:</div>
+            <textarea id="outputMorse" class="input-area" readonly placeholder="Il testo tradotto apparirà qui"></textarea>
+            <button id="btnCopy" class="copy-badge">Copia &#128203;</button>
+        </div>
+        
+        <div class="controls-panel">
+            <div class="label-text white-text">Opzioni di invio:</div>
+            <div class="control-row">
+                <button id="btnTorch" class="icon-btn">&#128294;</button>
+                <button id="btnSound" class="icon-btn">&#128266;</button>
+                <div class="sub-controls">
+                    <button id="btnLoop" class="action-btn small-btn loop-off">Loop <span id="loopIcon">&#8635;</span></button>
+                    <button id="btnStop" class="action-btn small-btn stop-btn">Stop &#9632;</button>
+                </div>
+            </div>
+        </div>
+
+        <div class="header-block mt-20">
+            <h1 class="main-title">Convertitore<br>Morse &rarr; Testo</h1>
+        </div>
+        
+        <div class="input-group">
+            <div class="label-text">Testo in Morse</div>
+            <textarea id="inputMorseManual" class="input-area"></textarea>
+        </div>
+
+        <div class="input-group">
+            <div class="label-text">Testo tradotto</div>
+            <textarea id="outputTranslatedText" class="input-area" readonly></textarea>
+        </div>
+    </div>
+
+    <!-- SCHERMATA 2: RICEZIONE -->
+    <div id="screen2" class="screen">
+        <div class="header-block">
+            <h1 class="main-title">Ricezione<br>messaggio</h1>
+        </div>
+        
+        <div class="input-group transparent-bg">
+            <div class="label-text center-text white-text">Scegliere metodo di ricezione (visivo | audio):</div>
+            <div class="rx-buttons-row">
+                <button id="btnRxCamera" class="icon-btn wide-rx">&#128247;</button> 
+                <button id="btnRxAudio" class="icon-btn wide-rx">&#127911;</button> 
+            </div>
+        </div>
+
+        <button id="btnRxStop" class="action-btn big-btn stop-btn">Stop ricezione</button>
+
+        <!-- Anteprima Fotocamera -->
+        <div id="cameraContainer">
+            <video id="videoElement" autoplay playsinline muted></video>
+            <canvas id="canvasElement"></canvas>
+            <div id="cameraOverlay">
+                <div class="target-box"></div>
+                <span id="camPlaceholder">Anteprima fotocamera</span>
+            </div>
+            <!-- Indicatore ON/OFF -->
+            <div id="signalIndicator"></div> 
+        </div>
+
+        <!-- Barra di Debug Livello -->
+        <div class="level-container">
+            <span id="levelLabel" class="level-label">Intensità Segnale (Barra verde deve saltare):</span>
+            <div class="level-bar-bg">
+                <div id="signalLevelBar" class="level-bar-fill"></div>
+            </div>
+        </div>
+
+        <div class="input-group">
+            <div class="label-text">Messaggio ricevuto:</div>
+            <textarea id="rxMorse" class="input-area" readonly placeholder="In attesa..."></textarea>
+            <button id="btnClearRx" class="copy-badge">Pulisci &#128465;</button>
+        </div>
+
+        <div class="input-group">
+            <div class="label-text">Traduzione:</div>
+            <textarea id="rxText" class="input-area" readonly placeholder="Traduzione in tempo reale..."></textarea>
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+    <script>
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('sw.js');
+        }
+    </script>
+</body>
+</html>

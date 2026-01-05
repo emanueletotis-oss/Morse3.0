@@ -1,0 +1,97 @@
+/* Font fallback */
+@font-face {
+    font-family: 'OCR A Extended';
+    src: local('OCR A Extended'), local('OCR A'), monospace;
+}
+
+body {
+    background-color: rgb(100, 149, 237); 
+    font-family: 'OCR A Extended', monospace;
+    margin: 0; padding: 0; color: black; padding-bottom: 50px;
+}
+
+.top-nav { display: flex; justify-content: center; background: transparent; padding: 10px; }
+.nav-btn { background: transparent; border: none; color: white; font-size: 16px; padding: 10px 20px; cursor: pointer; opacity: 0.7; font-weight: bold; font-family: inherit; }
+.nav-btn.active { opacity: 1; text-decoration: underline; }
+
+.screen { display: none; max-width: 500px; margin: 0 auto; padding: 10px; }
+.active-screen { display: block; }
+
+.header-block { text-align: center; margin-bottom: 15px; }
+.main-title { color: rgb(255, 248, 220); font-size: 24px; line-height: 1.2; margin: 0; text-shadow: 1px 1px 2px rgba(0,0,0,0.5); }
+
+.input-group { position: relative; margin-bottom: 15px; }
+.label-text { color: rgb(255, 248, 220); font-size: 14px; margin-bottom: 5px; font-weight: bold; }
+.white-text { color: white; }
+.center-text { text-align: center; }
+
+.input-area {
+    width: 100%; box-sizing: border-box; background-color: white;
+    border: 3px solid rgb(211, 211, 211); border-radius: 10px;
+    min-height: 80px; padding: 10px; font-family: inherit; font-size: 16px; resize: none;
+}
+
+.action-btn {
+    background-color: rgb(240, 248, 255); color: rgb(178, 34, 34);
+    border: none; border-radius: 8px; padding: 12px; font-family: inherit;
+    font-weight: bold; cursor: pointer; box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+}
+.big-btn { width: 100%; font-size: 18px; margin-bottom: 20px; }
+.small-btn { font-size: 14px; width: 100%; margin-bottom: 5px; }
+
+.copy-badge {
+    position: absolute; right: 5px; bottom: -30px;
+    background-color: rgb(240, 248, 255); color: rgb(178, 34, 34);
+    border: 1px solid rgb(211,211,211); border-radius: 5px; padding: 5px 10px;
+    font-size: 12px; cursor: pointer; display: flex; align-items: center; gap: 5px;
+}
+
+.controls-panel { margin-bottom: 20px; }
+.control-row { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
+.icon-btn {
+    background-color: white; border: 3px solid rgb(211, 211, 211);
+    border-radius: 10px; color: rgb(178, 34, 34); font-size: 40px;
+    width: 80px; height: 80px; cursor: pointer; display: flex; align-items: center; justify-content: center;
+    transition: background-color 0.2s;
+}
+
+/* Pulsanti attivi verde */
+.active-tx {
+    background-color: #4CAF50 !important;
+    color: white !important;
+    border-color: darkgreen !important;
+    box-shadow: inset 0 0 10px rgba(0,0,0,0.3);
+}
+
+.sub-controls { display: flex; flex-direction: column; width: 90px; }
+.loop-off { background-color: rgb(240, 248, 255); color: rgb(178, 34, 34); border: 2px solid rgb(178, 34, 34); }
+.loop-on { background-color: #4CAF50 !important; color: white !important; border: 2px solid darkgreen; }
+.stop-btn { border: 2px solid rgb(178, 34, 34); }
+
+.mt-20 { margin-top: 30px; }
+.wide-rx { flex: 1; height: 60px; font-size: 30px; }
+.rx-buttons-row { display: flex; gap: 15px; margin-top: 5px; }
+
+#cameraContainer {
+    position: relative; width: 100%; height: 250px; background-color: #ccc;
+    border-radius: 10px; overflow: hidden; margin-bottom: 5px;
+    display: flex; align-items: center; justify-content: center;
+}
+#videoElement { width: 100%; height: 100%; object-fit: cover; display: none; }
+#videoElement.active { display: block; }
+#canvasElement { display: none; }
+#cameraOverlay {
+    position: absolute; top: 0; left: 0; right: 0; bottom: 0; pointer-events: none;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+}
+.target-box { width: 40px; height: 40px; border: 3px solid red; box-shadow: 0 0 10px rgba(0,0,0,0.5); display: none; }
+#signalIndicator {
+    position: absolute; top: 10px; right: 10px; width: 20px; height: 20px;
+    border-radius: 50%; background-color: black; border: 2px solid white; z-index: 10;
+}
+.signal-active { background-color: lime !important; box-shadow: 0 0 15px lime; }
+
+.level-container { margin-bottom: 15px; }
+.level-label { font-size: 12px; color: white; display: block; margin-bottom: 2px; }
+.level-bar-bg { width: 100%; height: 10px; background-color: rgba(0,0,0,0.3); border-radius: 5px; overflow: hidden; }
+.level-bar-fill { height: 100%; width: 0%; background-color: lime; transition: width 0.05s ease; }
