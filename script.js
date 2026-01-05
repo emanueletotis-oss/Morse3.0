@@ -1,16 +1,20 @@
-// --- CONFIGURAZIONE E DIZIONARIO ---
-const MORSE_MAP = {'.-':'A','-...':'B','-.-.':'C','-..':'D','.':'E','..-.':'F','--.':'G','....':'H','..':'I','.---':'J','-.-':'K','.-..':'L','--':'M','-.':'N','---':'O','.--.':'P','--.-':'Q','.-.':'R','...':'S','-':'T','..-':'U','...-':'V','.--':'W','-..-':'X','-.--':'Y','--..':'Z', '-----':'0','.----':'1','..---':'2','...--':'3','....-':'4','.....':'5','-....':'6','--...':'7','---..':'8','----.':'9','/':' '};
+// --- CONFIGURAZIONE DIZIONARIO ---
+const MORSE_MAP = {
+    '.-':'A','-...':'B','-.-.':'C','-..':'D','.':'E','..-.':'F','--.':'G','....':'H','..':'I','.---':'J','-.-':'K','.-..':'L','--':'M','-.':'N','---':'O','.--.':'P','--.-':'Q','.-.':'R','...':'S','-':'T','..-':'U','...-':'V','.--':'W','-..-':'X','-.--':'Y','--..':'Z', '-----':'0','.----':'1','..---':'2','...--':'3','....-':'4','.....':'5','-....':'6','--...':'7','---..':'8','----.':'9','/':' '
+};
+const REVERSE_MAP = Object.fromEntries(Object.entries(MORSE_MAP).map(([k,v]) => [v,k]));
+
+// --- PARAMETRI DI RICEZIONE (CALIBRATI) ---
+const UNIT = 250; // Millisecondi base
+const TOLERANCE = 0.7; // Fattore di tolleranza per fluttuazioni frame-rate
 
 // --- VARIABILI DI STATO ---
 let audioCtx, activeStream, rxInterval;
-let isTransmitting = false, isLooping = false, stopSignal = false;
-
-// Logica di ricezione
-let lastState = false;
-let lastTransitionTime = performance.now();
-let currentSymbol = "";
-let minBrightness = 255, maxBrightness = 0;
-let history = []; // Per la media mobile della luminosità
+let signalActive = false;
+let lastTransition = performance.now();
+let currentBuffer = ""; // Accumula . e -
+let isTransmitting = false;
+let stopSignal = false;
 
 // --- NAVIGAZIONE ---
 function showScreen(id) {
@@ -21,55 +25,197 @@ function showScreen(id) {
     stopReception(); stopTransmission();
 }
 
-// --- TRASMISSIONE (Semplificata e robusta) ---
+// --- LOGICA DI DECODIFICA (IL CUORE DEL SISTEMA) ---
+function handleSignalChange(isOn) {
+    const now = performance.now();
+    const duration = now - lastTransition;
+    const indicator = document.getElementById('signalIndicator');
+
+    if (isOn !== signalActive) {
+        if (!isOn) { 
+            // PASSAGGIO DA LUCE A BUIO (Fine di un punto o linea)
+            // Se il segnale è durato meno di 50ms, ignoralo (rumore/glitch)
+            if (duration > 50) {
+                if (duration < UNIT * 1.8) {
+                    currentBuffer += ".";
+                    updateLiveMorse(".");
+                } else {
+                    currentBuffer += "-";
+                    updateLiveMorse("-");
+                }
+            }
+        } else {
+            // PASSAGGIO DA BUIO A LUCE (Inizio segnale dopo una pausa)
+            // Controlliamo quanto è durata la pausa
+            if (duration > UNIT * 2.2) { 
+                // Se la pausa è stata lunga, la lettera precedente è finita
+                decodeLetter();
+                if (duration > UNIT * 5) { 
+                    // Se la pausa è lunghissima, è uno spazio tra parole
+                    document.getElementById('rxText').value += " ";
+                    document.getElementById('rxMorse').value += " / ";
+                } else {
+                    document.getElementById('rxMorse').value += " ";
+                }
+            }
+        }
+        signalActive = isOn;
+        lastTransition = now;
+        indicator.className = isOn ? 'signal-active' : '';
+    }
+}
+
+function updateLiveMorse(char) {
+    const rxM = document.getElementById('rxMorse');
+    rxM.value += char;
+    rxM.scrollTop = rxM.scrollHeight;
+}
+
+function decodeLetter() {
+    if (currentBuffer === "") return;
+    const letter = MORSE_MAP[currentBuffer] || "?";
+    const rxT = document.getElementById('rxText');
+    rxT.value += letter;
+    currentBuffer = "";
+    rxT.scrollTop = rxT.scrollHeight;
+}
+
+// --- RICEZIONE VISIVA MIGLIORATA ---
+async function startVideoRx() {
+    stopReception();
+    try {
+        activeStream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: 'environment', width: { ideal: 640 } }
+        });
+        const v = document.getElementById('videoElement');
+        v.srcObject = activeStream;
+        v.classList.add('active');
+        document.querySelector('.target-box').style.display = 'block';
+        document.getElementById('camPlaceholder').style.display = 'none';
+
+        const canvas = document.getElementById('canvasElement');
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+
+        let minB = 255, maxB = 0;
+
+        rxInterval = setInterval(() => {
+            if (v.readyState < 2) return;
+            canvas.width = 40; canvas.height = 40;
+            // Analisi dell'area centrale
+            ctx.drawImage(v, v.videoWidth/2-20, v.videoHeight/2-20, 40, 40, 0, 0, 40, 40);
+            const pixels = ctx.getImageData(0,0,40,40).data;
+            
+            let brightness = 0;
+            for(let i=0; i<pixels.length; i+=4) {
+                brightness += (pixels[i] + pixels[i+1] + pixels[i+2]) / 3;
+            }
+            brightness /= (pixels.length/4);
+
+            // Adattamento dinamico della soglia
+            if (brightness < minB) minB = brightness;
+            if (brightness > maxB) maxB = brightness;
+            
+            // "Dimentica" lentamente i valori per ricalibrarsi
+            minB += 0.05; maxB -= 0.05;
+
+            const diff = maxB - minB;
+            const threshold = minB + (diff * 0.6); // Soglia al 60% per essere più sicuri del segnale ON
+
+            // Consideriamo ON solo se c'è un contrasto netto (>15 punti su 255)
+            const isOn = (diff > 15) && (brightness > threshold);
+            
+            // Barra di debug
+            const level = diff > 0 ? ((brightness - minB) / diff) * 100 : 0;
+            document.getElementById('signalLevelBar').style.width = level + "%";
+            document.getElementById('signalLevelBar').style.backgroundColor = isOn ? "lime" : "gray";
+
+            handleSignalChange(isOn);
+        }, 33); // ~30 FPS
+    } catch(e) { alert("Camera Error: " + e); }
+}
+
+// --- RICEZIONE AUDIO MIGLIORATA ---
+async function startAudioRx() {
+    stopReception();
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    audioCtx.resume();
+
+    activeStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const source = audioCtx.createMediaStreamSource(activeStream);
+    const analyzer = audioCtx.createAnalyser();
+    analyzer.fftSize = 512;
+    source.connect(analyzer);
+
+    const buffer = new Uint8Array(analyzer.frequencyBinCount);
+    
+    rxInterval = setInterval(() => {
+        analyzer.getByteFrequencyData(buffer);
+        // Cerchiamo l'energia nelle frequenze medie (500-1000Hz)
+        let maxVal = 0;
+        for(let i=8; i<25; i++) if(buffer[i] > maxVal) maxVal = buffer[i];
+
+        const isOn = maxVal > 120; // Soglia sensibilità mic
+        document.getElementById('signalLevelBar').style.width = (maxVal/255*100) + "%";
+        document.getElementById('signalLevelBar').style.backgroundColor = isOn ? "lime" : "gray";
+        
+        handleSignalChange(isOn);
+    }, 40);
+}
+
+// --- TRASMISSIONE (Invariata ma pulita) ---
 async function startTx(type) {
     if (isTransmitting) return;
-    if (type === 'sound') { if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)(); audioCtx.resume(); }
-    
-    const code = document.getElementById('outputMorse').value;
-    if (!code) return;
+    const text = document.getElementById('outputMorse').value;
+    if (!text) return;
+
+    if (type === 'sound') {
+        if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        audioCtx.resume();
+    }
 
     isTransmitting = true; stopSignal = false;
-    const btn = document.getElementById(type === 'sound' ? 'btnSound' : 'btnTorch');
-    btn.classList.add('active-tx');
+    document.getElementById(type === 'sound' ? 'btnSound' : 'btnTorch').classList.add('active-tx');
 
     let track = null;
     if (type === 'torch') {
         try {
             const s = await navigator.mediaDevices.getUserMedia({video: {facingMode: 'environment'}});
             track = s.getVideoTracks()[0];
-        } catch(e) { alert("Torcia non disponibile"); stopTransmission(); return; }
+        } catch(e) { stopTransmission(); return; }
     }
 
-    const unit = 200; // ms base
-    do {
-        for (let char of code) {
-            if (stopSignal) break;
-            let d = char === '.' ? unit : char === '-' ? unit * 3 : 0;
-            if (d > 0) {
-                if (type === 'sound') playTone(d);
-                if (track) track.applyConstraints({advanced: [{torch: true}]});
-                await new Promise(r => setTimeout(r, d));
-                if (track) track.applyConstraints({advanced: [{torch: false}]});
-                await new Promise(r => setTimeout(r, unit));
-            } else if (char === ' ') await new Promise(r => setTimeout(r, unit * 3));
-            else if (char === '/') await new Promise(r => setTimeout(r, unit * 7));
+    const play = async (d) => {
+        if (type === 'sound') {
+            const o = audioCtx.createOscillator();
+            const g = audioCtx.createGain();
+            o.connect(g); g.connect(audioCtx.destination);
+            o.frequency.value = 600;
+            g.gain.setValueAtTime(0, audioCtx.currentTime);
+            g.gain.linearRampToValueAtTime(1, audioCtx.currentTime + 0.01);
+            o.start();
+            await new Promise(r => setTimeout(r, d));
+            g.gain.linearRampToValueAtTime(0, audioCtx.currentTime + 0.01);
+            o.stop(audioCtx.currentTime + 0.05);
+        } else if (track) {
+            track.applyConstraints({advanced: [{torch: true}]});
+            await new Promise(r => setTimeout(r, d));
+            track.applyConstraints({advanced: [{torch: false}]});
         }
-        await new Promise(r => setTimeout(r, unit * 10));
+    };
+
+    do {
+        for (let c of text) {
+            if (stopSignal) break;
+            if (c === '.') { await play(UNIT); await new Promise(r => setTimeout(r, UNIT)); }
+            else if (c === '-') { await play(UNIT*3); await new Promise(r => setTimeout(r, UNIT)); }
+            else if (c === ' ') { await new Promise(r => setTimeout(r, UNIT*2)); }
+            else if (c === '/') { await new Promise(r => setTimeout(r, UNIT*6)); }
+        }
+        await new Promise(r => setTimeout(r, UNIT * 8));
     } while (isLooping && !stopSignal);
 
     if (track) track.stop();
     stopTransmission();
-}
-
-function playTone(d) {
-    const osc = audioCtx.createOscillator();
-    const g = audioCtx.createGain();
-    osc.connect(g); g.connect(audioCtx.destination);
-    osc.frequency.value = 600;
-    g.gain.setTargetAtTime(1, audioCtx.currentTime, 0.01);
-    g.gain.setTargetAtTime(0, audioCtx.currentTime + d/1000 - 0.01, 0.01);
-    osc.start(); osc.stop(audioCtx.currentTime + d/1000);
 }
 
 function stopTransmission() {
@@ -77,137 +223,20 @@ function stopTransmission() {
     document.querySelectorAll('.icon-btn').forEach(b => b.classList.remove('active-tx'));
 }
 
-// --- CORE RICEZIONE: IL MOTORE DI DECODIFICA ---
-function handleSignal(isOn) {
-    const now = performance.now();
-    const duration = now - lastTransitionTime;
-    const indicator = document.getElementById('signalIndicator');
-
-    if (isOn !== lastState) {
-        if (isOn) { 
-            // Inizio segnale (Luce accesa): analizziamo la durata del SILENZIO
-            if (duration > 400 && duration < 1200) { // Spazio tra lettere
-                decodeSymbol();
-                document.getElementById('rxMorse').value += " ";
-            } else if (duration >= 1200) { // Spazio tra parole
-                decodeSymbol();
-                document.getElementById('rxMorse').value += " / ";
-                document.getElementById('rxText').value += " ";
-            }
-        } else {
-            // Fine segnale (Luce spenta): analizziamo la durata del SEGNALE
-            if (duration > 50) { // Filtro anti-rumore
-                const type = (duration < 350) ? "." : "-";
-                currentSymbol += type;
-                document.getElementById('rxMorse').value += type;
-            }
-        }
-        lastState = isOn;
-        lastTransitionTime = now;
-        indicator.className = isOn ? 'signal-active' : '';
-    }
-}
-
-function decodeSymbol() {
-    if (currentSymbol === "") return;
-    const txt = MORSE_MAP[currentSymbol] || "?";
-    document.getElementById('rxText').value += txt;
-    currentSymbol = "";
-    // Auto-scroll
-    document.getElementById('rxText').scrollTop = document.getElementById('rxText').scrollHeight;
-}
-
-// --- RICEZIONE VISIVA (Soglia Adattiva) ---
-async function startVideoRx() {
-    stopReception();
-    activeStream = await navigator.mediaDevices.getUserMedia({video: {facingMode: 'environment', width: 640}});
-    const v = document.getElementById('videoElement');
-    v.srcObject = activeStream; v.play();
-    v.classList.add('active');
-    document.querySelector('.target-box').style.display = 'block';
-    document.getElementById('camPlaceholder').style.display = 'none';
-
-    const canvas = document.getElementById('canvasElement');
-    const ctx = canvas.getContext('2d', {willReadFrequently: true});
-
-    rxInterval = setInterval(() => {
-        if (v.readyState < 2) return;
-        canvas.width = 40; canvas.height = 40;
-        // Campioniamo solo il centro (quadrato rosso)
-        ctx.drawImage(v, v.videoWidth/2-20, v.videoHeight/2-20, 40, 40, 0, 0, 40, 40);
-        const data = ctx.getImageData(0,0,40,40).data;
-        
-        let brightness = 0;
-        for(let i=0; i<data.length; i+=4) brightness += (data[i]+data[i+1]+data[i+2])/3;
-        brightness /= (data.length/4);
-
-        // DINAMICA: Aggiorna min/max in tempo reale
-        if (brightness < minBrightness) minBrightness = brightness;
-        if (brightness > maxBrightness) maxBrightness = brightness;
-        
-        // Decadimento lento dei valori estremi per adattarsi a nuove scene
-        minBrightness += 0.1; maxBrightness -= 0.1;
-
-        const range = maxBrightness - minBrightness;
-        const threshold = minBrightness + (range * 0.5); // Soglia al 50% del range rilevato
-
-        // Segnale ON se luminosità > soglia E il range è significativo (> 20 punti)
-        const isOn = (range > 20) && (brightness > threshold);
-        
-        // UI
-        const percent = range > 0 ? ((brightness - minBrightness) / range) * 100 : 0;
-        document.getElementById('signalLevelBar').style.width = percent + "%";
-        document.getElementById('signalLevelBar').style.backgroundColor = isOn ? "lime" : "gray";
-
-        handleSignal(isOn);
-    }, 40);
-}
-
-// --- RICEZIONE AUDIO (Analisi Picco) ---
-async function startAudioRx() {
-    stopReception();
-    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    audioCtx.resume();
-    
-    activeStream = await navigator.mediaDevices.getUserMedia({audio: true});
-    const src = audioCtx.createMediaStreamSource(activeStream);
-    const analyzer = audioCtx.createAnalyser();
-    analyzer.fftSize = 512;
-    src.connect(analyzer);
-    
-    const buffer = new Uint8Array(analyzer.frequencyBinCount);
-    rxInterval = setInterval(() => {
-        analyzer.getByteFrequencyData(buffer);
-        // Cerchiamo il volume massimo nel range umano (300-1200Hz)
-        let maxVol = 0;
-        for(let i=6; i<30; i++) if(buffer[i] > maxVol) maxVol = buffer[i];
-
-        const isOn = maxVol > 110; // Soglia fissa per audio (più stabile della luce)
-        
-        document.getElementById('signalLevelBar').style.width = (maxVol/255*100) + "%";
-        document.getElementById('signalLevelBar').style.backgroundColor = isOn ? "lime" : "gray";
-        
-        handleSignal(isOn);
-    }, 40);
-}
-
 function stopReception() {
     if (activeStream) activeStream.getTracks().forEach(t => t.stop());
     clearInterval(rxInterval);
-    decodeSymbol();
+    decodeLetter(); // Traduci l'ultima lettera rimasta nel buffer
     document.getElementById('videoElement').classList.remove('active');
     document.querySelector('.target-box').style.display = 'none';
     document.getElementById('camPlaceholder').style.display = 'block';
     document.getElementById('signalLevelBar').style.width = "0%";
 }
 
-// Event Listeners
+// --- EVENTI ---
 document.getElementById('btnConvert').onclick = () => {
-    const t = document.getElementById('inputText').value.toUpperCase();
-    document.getElementById('outputMorse').value = t.split('').map(c => {
-        for(let k in MORSE_MAP) if(MORSE_MAP[k] === c) return k;
-        return c === ' ' ? '/' : '';
-    }).join(' ');
+    const val = document.getElementById('inputText').value.toUpperCase();
+    document.getElementById('outputMorse').value = val.split('').map(c => REVERSE_MAP[c] || (c===' '?'/':'')).join(' ');
 };
 document.getElementById('btnRxCamera').onclick = startVideoRx;
 document.getElementById('btnRxAudio').onclick = startAudioRx;
@@ -215,9 +244,7 @@ document.getElementById('btnRxStop').onclick = stopReception;
 document.getElementById('btnClearRx').onclick = () => {
     document.getElementById('rxMorse').value = "";
     document.getElementById('rxText').value = "";
-};
-document.getElementById('btnCopy').onclick = () => {
-    navigator.clipboard.writeText(document.getElementById('outputMorse').value);
+    currentBuffer = "";
 };
 document.getElementById('btnLoop').onclick = () => {
     isLooping = !isLooping;
