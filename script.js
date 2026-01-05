@@ -10,8 +10,8 @@ const MORSE_CODE = {
 };
 const REVERSE_MORSE = Object.fromEntries(Object.entries(MORSE_CODE).map(([k, v]) => [v, k]));
 
-// TEMPISTICHE (Base 250ms come da tua impostazione)
-const UNIT_TIME = 250; 
+// COSTANTI DI TEMPO (Flessibili)
+let UNIT_TIME = 200; // Tempo base di riferimento (ms)
 
 // --- ELEMENTI DOM ---
 const outputMorse = document.getElementById('outputMorse');
@@ -28,10 +28,10 @@ let audioCtx = null;
 let activeStream = null;
 let rxInterval = null;
 
-// Variabili per la decodifica
-let lastTransitionTime = Date.now();
-let signalState = false; 
-let currentSymbol = ""; 
+// Stato Ricezione
+let lastTransitionTime = performance.now();
+let signalActive = false;
+let currentMorseBuffer = ""; 
 
 // --- NAVIGAZIONE ---
 function showScreen(id) {
@@ -43,7 +43,7 @@ function showScreen(id) {
     stopReception();
 }
 
-// --- CONVERSIONE TESTO -> MORSE ---
+// --- TRASMISSIONE (Invariata) ---
 document.getElementById('btnConvert').addEventListener('click', () => {
     const text = document.getElementById('inputText').value.trim();
     if(!text) return;
@@ -60,40 +60,31 @@ document.getElementById('btnCopy').addEventListener('click', () => {
 });
 
 document.getElementById('btnClearRx').addEventListener('click', () => {
-    rxMorse.value = "";
-    rxText.value = "";
-    currentSymbol = "";
+    rxMorse.value = ""; rxText.value = ""; currentMorseBuffer = "";
 });
 
-// --- HELPER AUDIO ---
 function unlockAudio() {
     if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     if (audioCtx.state === 'suspended') audioCtx.resume();
 }
 
-// --- TRASMISSIONE ---
 async function playBeep(duration) {
     if(!audioCtx) return;
     const osc = audioCtx.createOscillator();
     const gain = audioCtx.createGain();
-    osc.connect(gain);
-    gain.connect(audioCtx.destination);
-    osc.frequency.value = 600; 
-    osc.type = 'sine';
+    osc.connect(gain); gain.connect(audioCtx.destination);
+    osc.frequency.value = 650; osc.type = 'sine';
     const now = audioCtx.currentTime;
     gain.gain.setValueAtTime(0, now);
     gain.gain.linearRampToValueAtTime(1, now + 0.01);
     gain.gain.setValueAtTime(1, now + (duration/1000) - 0.01);
     gain.gain.linearRampToValueAtTime(0, now + (duration/1000));
-    osc.start(now);
-    osc.stop(now + (duration/1000));
+    osc.start(now); osc.stop(now + (duration/1000));
     return new Promise(r => setTimeout(r, duration));
 }
 
 async function setTorch(on, track) {
-    if (track) {
-        try { await track.applyConstraints({ advanced: [{ torch: on }] }); } catch(e){}
-    }
+    if (track) try { await track.applyConstraints({ advanced: [{ torch: on }] }); } catch(e){}
 }
 
 async function startTx(type) {
@@ -103,119 +94,105 @@ async function startTx(type) {
     if (!code) return;
     const btn = document.getElementById(type === 'sound' ? 'btnSound' : 'btnTorch');
     btn.classList.add('active-tx');
-    isTransmitting = true;
-    stopSignal = false;
-    let track = null;
-    let stream = null;
+    isTransmitting = true; stopSignal = false;
+    let track = null; let stream = null;
     if (type === 'torch') {
         try {
             stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
             track = stream.getVideoTracks()[0];
-        } catch(e) {
-            alert("Torcia non supportata.");
-            stopTransmission();
-            return;
-        }
+        } catch(e) { alert("Torcia non disponibile"); stopTransmission(); return; }
     }
     do {
         for (let char of code) {
             if (stopSignal) break;
-            let dur = 0;
-            if (char === '.') dur = UNIT_TIME;
-            else if (char === '-') dur = UNIT_TIME * 3;
-            else if (char === ' ') { await sleep(UNIT_TIME * 3); continue; }
-            else if (char === '/') { await sleep(UNIT_TIME * 7); continue; }
+            let dur = (char === '.') ? UNIT_TIME : (char === '-') ? UNIT_TIME * 3 : 0;
             if (dur > 0) {
                 if (type === 'sound') await playBeep(dur);
                 if (type === 'torch') { setTorch(true, track); await sleep(dur); setTorch(false, track); }
-                await sleep(UNIT_TIME);
-            }
+                await sleep(UNIT_TIME); 
+            } else if (char === ' ') await sleep(UNIT_TIME * 3);
+            else if (char === '/') await sleep(UNIT_TIME * 7);
         }
-        await sleep(UNIT_TIME * 4); 
+        await sleep(UNIT_TIME * 5);
     } while (isLooping && !stopSignal);
     if(track) stream.getTracks().forEach(t => t.stop());
     stopTransmission();
 }
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
-
 function stopTransmission() {
-    stopSignal = true;
-    isTransmitting = false;
-    isLooping = false;
-    updateLoopUI();
+    stopSignal = true; isTransmitting = false; isLooping = false;
     document.getElementById('btnSound').classList.remove('active-tx');
     document.getElementById('btnTorch').classList.remove('active-tx');
+    updateLoopUI();
 }
-
 document.getElementById('btnSound').addEventListener('click', () => { stopSignal = true; setTimeout(() => startTx('sound'), 100); });
 document.getElementById('btnTorch').addEventListener('click', () => { stopSignal = true; setTimeout(() => startTx('torch'), 100); });
 document.getElementById('btnStop').addEventListener('click', stopTransmission);
 document.getElementById('btnLoop').addEventListener('click', () => { isLooping = !isLooping; updateLoopUI(); });
-
 function updateLoopUI() {
     const btn = document.getElementById('btnLoop');
     btn.innerHTML = isLooping ? "Loop ON &#10004;" : "Loop &#8635;";
     btn.className = `action-btn small-btn ${isLooping ? 'loop-on' : 'loop-off'}`;
 }
 
-// --- LOGICA DI RICEZIONE MIGLIORATA ---
+// --- NUOVA LOGICA DI RICEZIONE AUTO-ADATTIVA ---
 
 function processInput(isOn) {
-    const now = Date.now();
+    const now = performance.now();
     const duration = now - lastTransitionTime;
     const indicator = document.getElementById('signalIndicator');
-    
+
     if (isOn) indicator.classList.add('signal-active');
     else indicator.classList.remove('signal-active');
 
-    // Transizione: SEGNALE CAMBIATO (da OFF a ON o viceversa)
-    if (isOn !== signalState) {
+    // Cambiamento di stato (da acceso a spento o viceversa)
+    if (isOn !== signalActive) {
         
         if (!isOn) { 
-            // Fine di un impulso (abbiamo appena spento la luce/suono)
-            // Determiniamo se era un PUNTO o una LINEA
-            if (duration > 50) { // Filtro anti-rumore (ignora impulsi troppo brevi)
-                if (duration < UNIT_TIME * 1.8) {
-                    currentSymbol += ".";
+            // FINE SEGNALE (abbiamo misurato la durata della luce/suono)
+            if (duration > 40) { // Filtro anti-glitch
+                if (duration < UNIT_TIME * 2.2) {
+                    currentMorseBuffer += ".";
                     rxMorse.value += ".";
                 } else {
-                    currentSymbol += "-";
+                    currentMorseBuffer += "-";
                     rxMorse.value += "-";
                 }
             }
         } else {
-            // Inizio di un nuovo impulso (c'era silenzio prima)
-            // Determiniamo se il silenzio era uno spazio tra lettere o parole
-            if (duration > UNIT_TIME * 5) { // Spazio tra parole
-                decodeCurrentSymbol();
+            // INIZIO SEGNALE (abbiamo misurato la durata del silenzio precedente)
+            if (duration > UNIT_TIME * 6) { 
+                decodeBuffer();
                 rxMorse.value += " / ";
                 rxText.value += " ";
-            } else if (duration > UNIT_TIME * 2) { // Spazio tra lettere
-                decodeCurrentSymbol();
+            } else if (duration > UNIT_TIME * 2) {
+                decodeBuffer();
                 rxMorse.value += " ";
             }
         }
         
-        signalState = isOn;
+        signalActive = isOn;
         lastTransitionTime = now;
     }
 }
 
-// Funzione per tradurre il simbolo accumulato (es. ".-") in lettera ("A")
-function decodeCurrentSymbol() {
-    if (currentSymbol === "") return;
-    const letter = REVERSE_MORSE[currentSymbol] || "?";
-    rxText.value += letter;
-    currentSymbol = "";
+function decodeBuffer() {
+    if (currentMorseBuffer === "") return;
+    const char = REVERSE_MORSE[currentMorseBuffer] || "?";
+    rxText.value += char;
+    currentMorseBuffer = "";
+    // Scroll automatico per vedere l'ultima lettera
+    rxText.scrollTop = rxText.scrollHeight;
+    rxMorse.scrollTop = rxMorse.scrollHeight;
 }
 
-// 1. RICEZIONE VIDEO CON FOCUS SUL TARGET
+// 1. RICEZIONE VIDEO (Analisi del solo quadratino rosso)
 async function startVideoRx() {
     stopReception();
     try {
         activeStream = await navigator.mediaDevices.getUserMedia({ 
-            video: { facingMode: 'environment', width: { ideal: 640 }, height: { ideal: 480 } } 
+            video: { facingMode: 'environment', width: 640, height: 480 } 
         });
         const vid = document.getElementById('videoElement');
         vid.srcObject = activeStream;
@@ -226,47 +203,48 @@ async function startVideoRx() {
         const canvas = document.getElementById('canvasElement');
         const ctx = canvas.getContext('2d', { willReadFrequently: true });
         
-        let avgBright = 0;
+        let rollingAvg = 128; // Media luminosa iniziale
 
         rxInterval = setInterval(() => {
             if (vid.readyState === vid.HAVE_ENOUGH_DATA) {
-                // Disegniamo una porzione ridotta del video sul canvas per analisi
-                canvas.width = 100; canvas.height = 100;
+                // Analizziamo solo l'area centrale (corrispondente alla target-box)
+                canvas.width = 50; canvas.height = 50;
                 
-                // Ritagliamo il centro del video (dove c'è il quadratino rosso)
-                const sourceSize = Math.min(vid.videoWidth, vid.videoHeight) * 0.2; // Prendi il 20% centrale
-                const sx = (vid.videoWidth - sourceSize) / 2;
-                const sy = (vid.videoHeight - sourceSize) / 2;
+                // Ritaglio centrale del 15% del video
+                const cropSize = vid.videoHeight * 0.15;
+                const sx = (vid.videoWidth - cropSize) / 2;
+                const sy = (vid.videoHeight - cropSize) / 2;
                 
-                ctx.drawImage(vid, sx, sy, sourceSize, sourceSize, 0, 0, 100, 100);
+                ctx.drawImage(vid, sx, sy, cropSize, cropSize, 0, 0, 50, 50);
                 
-                const frame = ctx.getImageData(0, 0, 100, 100);
-                let totalBright = 0;
+                const frame = ctx.getImageData(0, 0, 50, 50);
+                let currentBrightness = 0;
                 for(let i=0; i<frame.data.length; i+=4) {
-                    totalBright += (frame.data[i] + frame.data[i+1] + frame.data[i+2]) / 3;
+                    // Formula luminanza corretta
+                    currentBrightness += (frame.data[i] * 0.299 + frame.data[i+1] * 0.587 + frame.data[i+2] * 0.114);
                 }
-                const currentBright = totalBright / (frame.data.length / 4);
+                currentBrightness /= (frame.data.length / 4);
 
-                // Auto-calibrazione soglia
-                if (avgBright === 0) avgBright = currentBright;
-                avgBright = (avgBright * 0.9) + (currentBright * 0.1);
+                // Hysteresis dinamica per adattarsi a luci diverse
+                const threshold = rollingAvg + 40; 
+                const isBright = currentBrightness > threshold;
 
-                // Il segnale è ON se la luminosità attuale supera la media di una soglia fissa
-                const isBright = currentBright > (avgBright + 30);
-                
-                // Update UI barra
-                const diff = Math.max(0, currentBright - avgBright);
-                signalLevelBar.style.width = Math.min(100, diff * 2) + '%';
-                signalLevelBar.style.backgroundColor = isBright ? 'lime' : 'gray';
+                // Aggiornamento media lenta (per adattarsi a cambiamenti di luce ambientale)
+                rollingAvg = (rollingAvg * 0.98) + (currentBrightness * 0.02);
+
+                // UI Feedback
+                const signalPower = Math.min(100, Math.max(0, (currentBrightness - rollingAvg) * 2));
+                signalLevelBar.style.width = signalPower + '%';
+                signalLevelBar.style.backgroundColor = isBright ? 'lime' : '#444';
 
                 processInput(isBright);
             }
-        }, 50); // 20 fps per l'analisi
+        }, 40); // 25 campioni al secondo
 
-    } catch(e) { alert("Camera error: " + e); }
+    } catch(e) { alert("Errore camera: " + e); }
 }
 
-// 2. RICEZIONE AUDIO MIGLIORATA
+// 2. RICEZIONE AUDIO (Filtraggio frequenza)
 async function startAudioRx() {
     stopReception();
     try {
@@ -274,45 +252,41 @@ async function startAudioRx() {
         activeStream = await navigator.mediaDevices.getUserMedia({ audio: true });
         const source = audioCtx.createMediaStreamSource(activeStream);
         const analyzer = audioCtx.createAnalyser();
-        analyzer.fftSize = 512;
+        analyzer.fftSize = 1024;
         source.connect(analyzer);
         
-        const dataArray = new Uint8Array(analyzer.frequencyBinCount);
-        const hzPerBin = audioCtx.sampleRate / analyzer.fftSize;
+        const data = new Uint8Array(analyzer.frequencyBinCount);
+        const binSize = audioCtx.sampleRate / analyzer.fftSize;
         
-        // Cerchiamo in un range più ampio (400Hz - 1000Hz)
-        const lowBin = Math.floor(400 / hzPerBin);
-        const highBin = Math.ceil(1000 / hzPerBin);
+        // Cerchiamo il picco tra 500Hz e 900Hz (range tipico dei segnali SOS)
+        const minBin = Math.floor(500 / binSize);
+        const maxBin = Math.ceil(900 / binSize);
 
         rxInterval = setInterval(() => {
-            analyzer.getByteFrequencyData(dataArray);
-            let maxVol = 0;
-            for(let i = lowBin; i <= highBin; i++) {
-                if(dataArray[i] > maxVol) maxVol = dataArray[i];
+            analyzer.getByteFrequencyData(data);
+            let volume = 0;
+            for(let i = minBin; i <= maxBin; i++) {
+                if(data[i] > volume) volume = data[i];
             }
             
-            // Soglia volume (regolabile se l'ambiente è rumoroso)
-            const isTone = maxVol > 100;
+            const isTone = volume > 110; // Soglia sensibilità mic
             
-            signalLevelBar.style.width = (maxVol / 255 * 100) + '%';
-            signalLevelBar.style.backgroundColor = isTone ? 'lime' : 'gray';
+            signalLevelBar.style.width = (volume / 255 * 100) + '%';
+            signalLevelBar.style.backgroundColor = isTone ? 'lime' : '#444';
 
             processInput(isTone);
-        }, 50);
+        }, 40);
 
-    } catch(e) { alert("Mic error: " + e); }
+    } catch(e) { alert("Errore microfono: " + e); }
 }
 
 function stopReception() {
     if (activeStream) {
-        activeStream.getTracks().forEach(track => track.stop());
+        activeStream.getTracks().forEach(t => t.stop());
         activeStream = null;
     }
     if (rxInterval) clearInterval(rxInterval);
-    
-    // Decodifica l'ultimo simbolo se rimasto in sospeso
-    decodeCurrentSymbol();
-    
+    decodeBuffer(); // Forza traduzione dell'ultimo carattere
     document.getElementById('videoElement').classList.remove('active');
     document.querySelector('.target-box').style.display = 'none';
     document.getElementById('camPlaceholder').style.display = 'block';
