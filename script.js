@@ -1,11 +1,9 @@
-// --- CONFIGURAZIONE DIZIONARIO ---
+// --- CONFIGURAZIONE ---
 const MORSE_MAP = {'.-':'A','-...':'B','-.-.':'C','-..':'D','.':'E','..-.':'F','--.':'G','....':'H','..':'I','.---':'J','-.-':'K','.-..':'L','--':'M','-.':'N','---':'O','.--.':'P','--.-':'Q','.-.':'R','...':'S','-':'T','..-':'U','...-':'V','.--':'W','-..-':'X','-.--':'Y','--..':'Z', '-----':'0','.----':'1','..---':'2','...--':'3','....-':'4','.....':'5','-....':'6','--...':'7','---..':'8','----.':'9','/':' '};
 const REVERSE_MAP = Object.fromEntries(Object.entries(MORSE_MAP).map(([k,v]) => [v,k]));
 
-// TEMPI: 400ms garantisce che i sensori non perdano colpi
 const UNIT = 400; 
 
-// --- STATO GLOBALE ---
 let audioCtx, activeStream, rxInterval;
 let signalActive = false;
 let lastTransition = 0;
@@ -25,11 +23,10 @@ function showScreen(id) {
     stopTransmission();
 }
 
-// --- LOGICA DI RICEZIONE ---
+// --- LOGICA DI DECODIFICA ---
 function handleSignalChange(isOn) {
     const now = performance.now();
     
-    // FIX "/" INIZIALE: Ignora tutto finché non arriva il primo segnale vero
     if (!isFirstSignalDetected) {
         if (isOn) {
             isFirstSignalDetected = true;
@@ -42,10 +39,8 @@ function handleSignalChange(isOn) {
 
     if (isOn !== signalActive) {
         const duration = now - lastTransition;
-
         if (!isOn) { 
-            // FINE IMPULSO (LUCE/SUONO -> BUIO/SILENZIO)
-            if (duration > 60) { // Filtro anti-glitch
+            if (duration > 60) {
                 if (duration < UNIT * 1.8) {
                     currentBuffer += ".";
                     updateLiveMorse(".");
@@ -55,7 +50,6 @@ function handleSignalChange(isOn) {
                 }
             }
         } else {
-            // FINE PAUSA (BUIO/SILENZIO -> LUCE/SUONO)
             if (duration > UNIT * 1.5) { 
                 decodeLetter();
                 if (duration > UNIT * 4.5) { 
@@ -85,6 +79,15 @@ function decodeLetter() {
     rxT.value += letter;
     currentBuffer = "";
     rxT.scrollTop = rxT.scrollHeight;
+}
+
+// Funzione di controllo per decodifica automatica a fine messaggio
+function checkAutoDecode() {
+    if (!signalActive && currentBuffer !== "") {
+        if (performance.now() - lastTransition > UNIT * 2.5) {
+            decodeLetter();
+        }
+    }
 }
 
 // --- RICEZIONE VISIVA ---
@@ -128,19 +131,30 @@ async function startVideoRx() {
             document.getElementById('signalLevelBar').style.backgroundColor = isOn ? "lime" : "gray";
 
             handleSignalChange(isOn);
+            checkAutoDecode(); // Controlla se deve tradurre l'ultima lettera
         }, 40);
     } catch(e) { alert("Errore Camera"); }
 }
 
-// --- RICEZIONE AUDIO ---
+// --- RICEZIONE AUDIO (OTTIMIZZATA IPHONE) ---
 async function startAudioRx() {
     stopReception();
     isFirstSignalDetected = false;
+    
+    // Inizializzazione AudioContext forzata per iOS
     if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    audioCtx.resume();
+    if (audioCtx.state === 'suspended') await audioCtx.resume();
 
     try {
-        activeStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        // Disabilitiamo filtri che su iPhone uccidono il segnale morse
+        activeStream = await navigator.mediaDevices.getUserMedia({ 
+            audio: {
+                echoCancellation: false,
+                noiseSuppression: false,
+                autoGainControl: false
+            } 
+        });
+        
         const source = audioCtx.createMediaStreamSource(activeStream);
         const analyzer = audioCtx.createAnalyser();
         analyzer.fftSize = 512;
@@ -152,7 +166,8 @@ async function startAudioRx() {
         rxInterval = setInterval(() => {
             analyzer.getByteFrequencyData(buffer);
             let currentVol = 0;
-            for(let i=10; i<25; i++) if(buffer[i] > currentVol) currentVol = buffer[i];
+            // Cerchiamo l'energia nel range dei beep
+            for(let i=8; i<30; i++) if(buffer[i] > currentVol) currentVol = buffer[i];
 
             if (currentVol < minVol) minVol = currentVol;
             if (currentVol > maxVol) maxVol = currentVol;
@@ -160,14 +175,15 @@ async function startAudioRx() {
 
             const diff = maxVol - minVol;
             const threshold = minVol + (diff * 0.5);
-            const isOn = (diff > 45) && (currentVol > threshold);
+            const isOn = (diff > 40) && (currentVol > threshold);
 
-            document.getElementById('signalLevelBar').style.width = (currentVol/255*100) + "%";
+            document.getElementById('signalLevelBar').style.width = (currentVol/255 * 100) + "%";
             document.getElementById('signalLevelBar').style.backgroundColor = isOn ? "lime" : "gray";
             
             handleSignalChange(isOn);
+            checkAutoDecode(); 
         }, 40);
-    } catch(e) { alert("Errore Microfono"); }
+    } catch(e) { alert("Errore Microfono: assicurati di aver dato i permessi."); }
 }
 
 // --- TRASMISSIONE ---
@@ -175,6 +191,10 @@ async function startTx(type) {
     if (isTransmitting) return;
     const text = document.getElementById('outputMorse').value;
     if (!text) return;
+
+    // Sblocco AudioContext per iPhone
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === 'suspended') await audioCtx.resume();
 
     isTransmitting = true; stopSignal = false;
     document.getElementById(type === 'sound' ? 'btnSound' : 'btnTorch').classList.add('active-tx');
@@ -186,12 +206,8 @@ async function startTx(type) {
         try {
             stream = await navigator.mediaDevices.getUserMedia({video: {facingMode: 'environment'}});
             track = stream.getVideoTracks()[0];
-            // FIX PRIMO PUNTO: Aspettiamo che la fotocamera sia pronta
             await new Promise(r => setTimeout(r, 1000));
         } catch(e) { stopTransmission(); return; }
-    } else {
-        if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-        audioCtx.resume();
     }
 
     const play = async (d) => {
@@ -201,10 +217,10 @@ async function startTx(type) {
             o.connect(g); g.connect(audioCtx.destination);
             o.frequency.value = 800;
             g.gain.setValueAtTime(0, audioCtx.currentTime);
-            g.gain.linearRampToValueAtTime(1, audioCtx.currentTime + 0.02);
+            g.gain.linearRampToValueAtTime(1, audioCtx.currentTime + 0.01);
             o.start();
             await new Promise(r => setTimeout(r, d));
-            g.gain.linearRampToValueAtTime(0, audioCtx.currentTime + 0.02);
+            g.gain.linearRampToValueAtTime(0, audioCtx.currentTime + 0.01);
             o.stop(audioCtx.currentTime + 0.05);
         } else if (track) {
             try { await track.applyConstraints({advanced: [{torch: true}]}); } catch(e){}
@@ -244,9 +260,7 @@ function stopReception() {
     document.getElementById('signalLevelBar').style.width = "0%";
 }
 
-// --- COLLEGAMENTO EVENTI (IMPORTANTE) ---
-
-// Traduzione Testo -> Morse
+// --- EVENTI ---
 document.getElementById('btnConvert').onclick = () => {
     const val = document.getElementById('inputText').value.toUpperCase();
     document.getElementById('outputMorse').value = val.split('').map(c => {
@@ -258,19 +272,16 @@ document.getElementById('btnConvert').onclick = () => {
     }).join(' ');
 };
 
-// Copia negli appunti
 document.getElementById('btnCopy').onclick = () => {
     const el = document.getElementById('outputMorse');
     el.select();
     document.execCommand('copy');
 };
 
-// Avvio Trasmissione
-document.getElementById('btnSound').onclick = () => { stopSignal = true; setTimeout(() => startTx('sound'), 100); };
-document.getElementById('btnTorch').onclick = () => { stopSignal = true; setTimeout(() => startTx('torch'), 100); };
+document.getElementById('btnSound').onclick = () => { startTx('sound'); };
+document.getElementById('btnTorch').onclick = () => { startTx('torch'); };
 document.getElementById('btnStop').onclick = stopTransmission;
 
-// Loop
 document.getElementById('btnLoop').onclick = () => {
     isLooping = !isLooping;
     const btn = document.getElementById('btnLoop');
@@ -278,12 +289,10 @@ document.getElementById('btnLoop').onclick = () => {
     btn.className = `action-btn small-btn ${isLooping ? 'loop-on' : 'loop-off'}`;
 };
 
-// Ricezione
 document.getElementById('btnRxCamera').onclick = startVideoRx;
 document.getElementById('btnRxAudio').onclick = startAudioRx;
 document.getElementById('btnRxStop').onclick = stopReception;
 
-// Pulizia
 document.getElementById('btnClearRx').onclick = () => {
     document.getElementById('rxMorse').value = "";
     document.getElementById('rxText').value = "";
